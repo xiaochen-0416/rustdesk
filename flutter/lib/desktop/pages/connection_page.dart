@@ -31,7 +31,6 @@ class OnlineStatusWidget extends StatefulWidget {
   State<OnlineStatusWidget> createState() => _OnlineStatusWidgetState();
 }
 
-/// State for the connection page.
 class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
   final _svcStopped = Get.find<RxBool>(tag: 'stop-service');
   final _svcIsUsingPublicServer = true.obs;
@@ -39,15 +38,6 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
 
   double get em => 14.0;
   double? get height => bind.isIncomingOnly() ? null : em * 3;
-
-  void onUsePublicServerGuide() {
-    const url = "https://rustdesk.com/pricing";
-    canLaunchUrlString(url).then((can) {
-      if (can) {
-        launchUrlString(url);
-      }
-    });
-  }
 
   @override
   void initState() {
@@ -78,37 +68,6 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
               .marginOnly(left: em),
         );
 
-    setupServerWidget() => Flexible(
-          child: Offstage(
-            offstage: !(!_svcStopped.value &&
-                stateGlobal.svcStatus.value == SvcStatus.ready &&
-                _svcIsUsingPublicServer.value),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Text(', ', style: TextStyle(fontSize: em)),
-                Flexible(
-                  child: InkWell(
-                    onTap: onUsePublicServerGuide,
-                    child: Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            translate('setup_server_tip'),
-                            style: TextStyle(
-                                decoration: TextDecoration.underline,
-                                fontSize: em),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              ],
-            ),
-          ),
-        );
-
     basicWidget() => Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
@@ -129,11 +88,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
               width: isIncomingOnly ? 226 : null,
               child: _buildConnStatusMsg(),
             ),
-            // stop
             if (!isIncomingOnly) startServiceWidget(),
-            // ready && public
-            // No need to show the guide if is custom client.
-            if (!isIncomingOnly) setupServerWidget(),
           ],
         );
 
@@ -187,7 +142,6 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
   }
 }
 
-/// Connection page for connecting to a remote peer.
 class ConnectionPage extends StatefulWidget {
   const ConnectionPage({Key? key}) : super(key: key);
 
@@ -195,10 +149,8 @@ class ConnectionPage extends StatefulWidget {
   State<ConnectionPage> createState() => _ConnectionPageState();
 }
 
-/// State for the connection page.
 class _ConnectionPageState extends State<ConnectionPage>
     with SingleTickerProviderStateMixin, WindowListener {
-  /// Controller for the id input bar.
   final _idController = IDTextEditingController();
 
   final RxBool _idInputFocused = false.obs;
@@ -211,7 +163,6 @@ class _ConnectionPageState extends State<ConnectionPage>
 
   final AllPeersLoader _allPeersLoader = AllPeersLoader();
 
-  // https://github.com/flutter/flutter/issues/157244
   Iterable<Peer> _autocompleteOpts = [];
 
   final _menuOpen = false.obs;
@@ -260,7 +211,6 @@ class _ConnectionPageState extends State<ConnectionPage>
       isWindowMinimized = true;
     } else if (eventName == 'maximize' || eventName == 'restore') {
       if (isWindowMinimized && isWindows) {
-        // windows can't update when minimized.
         Get.forceAppUpdate();
       }
       isWindowMinimized = false;
@@ -269,13 +219,11 @@ class _ConnectionPageState extends State<ConnectionPage>
 
   @override
   void onWindowEnterFullScreen() {
-    // Remove edge border by setting the value to zero.
     stateGlobal.resizeEdgeSize.value = 0;
   }
 
   @override
   void onWindowLeaveFullScreen() {
-    // Restore edge border to default edge size.
     stateGlobal.resizeEdgeSize.value = stateGlobal.isMaximized.isTrue
         ? kMaximizeEdgeSize
         : windowResizeEdgeSize;
@@ -295,7 +243,6 @@ class _ConnectionPageState extends State<ConnectionPage>
       }
 
       final textLength = _idEditingController.value.text.length;
-      // Select all to facilitate removing text, just following the behavior of address input of chrome.
       _idEditingController.selection =
           TextSelection(baseOffset: 0, extentOffset: textLength);
     }
@@ -316,7 +263,16 @@ class _ConnectionPageState extends State<ConnectionPage>
             ).marginOnly(top: 22),
             SizedBox(height: 12),
             Divider().paddingOnly(right: 12),
-            Expanded(child: PeerTabPage()),
+            Expanded(
+              child: Center(
+                child: Image.asset(
+                  'assets/rustdesk.png',
+                  width: 399,
+                  height: 106,
+                  fit: BoxFit.contain,
+                ),
+              ),
+            ),
           ],
         ).paddingOnly(left: 12.0)),
         if (!isOutgoingOnly) const Divider(height: 1),
@@ -325,8 +281,6 @@ class _ConnectionPageState extends State<ConnectionPage>
     );
   }
 
-  /// Callback for the connect button.
-  /// Connects to the selected peer.
   void onConnect(
       {bool isFileTransfer = false,
       bool isViewCamera = false,
@@ -338,8 +292,6 @@ class _ConnectionPageState extends State<ConnectionPage>
         isTerminal: isTerminal);
   }
 
-  /// UI for the remote ID TextField.
-  /// Search for a peer.
   Widget _buildRemoteIDTextField(BuildContext context) {
     var w = Container(
       width: 320 + 20 * 2,
