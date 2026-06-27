@@ -3555,4 +3555,336 @@ mod tests {
             assert!(Config::apply_permanent_password_storage_for_sync(
                 &mut cfg, storage, "salt123"
             )
-            .is_err
+            .is_err());
+            assert!(cfg.password.is_empty());
+            assert!(cfg.salt.is_empty());
+        }
+
+        let mut cfg = Config::default();
+        cfg.password = invalid_storage.clone();
+        cfg.salt = "salt123".to_owned();
+        assert!(Config::apply_permanent_password_storage_for_sync(
+            &mut cfg,
+            &invalid_storage,
+            "salt123"
+        )
+        .is_err());
+        assert_eq!(cfg.password, invalid_storage);
+        assert_eq!(cfg.salt, "salt123");
+    }
+
+    #[test]
+    fn test_permanent_password_sync_rejects_non_empty_storage_without_salt() {
+        let mut cfg = Config::default();
+        let h1 = compute_permanent_password_h1("p@ssw0rd", "salt123");
+        let incoming = encode_permanent_password_encrypted_storage_from_h1(&h1).unwrap();
+
+        assert!(
+            Config::apply_permanent_password_storage_for_sync(&mut cfg, &incoming, "").is_err()
+        );
+        assert!(cfg.password.is_empty());
+        assert!(cfg.salt.is_empty());
+    }
+
+    #[test]
+    fn test_permanent_password_sync_empty_storage_clears_existing_password() {
+        let salt = "salt123";
+        let h1 = compute_permanent_password_h1("p@ssw0rd", salt);
+        let mut cfg = Config::default();
+        cfg.password = encode_permanent_password_encrypted_storage_from_h1(&h1).unwrap();
+        cfg.salt = salt.to_owned();
+
+        assert!(Config::apply_permanent_password_storage_for_sync(&mut cfg, "", "").unwrap());
+        assert!(cfg.password.is_empty());
+        assert_eq!(cfg.salt, salt);
+    }
+
+    #[test]
+    fn test_permanent_password_sync_empty_storage_uses_incoming_salt() {
+        let old_salt = "old-salt";
+        let h1 = compute_permanent_password_h1("p@ssw0rd", old_salt);
+        let mut cfg = Config::default();
+        cfg.password = encode_permanent_password_encrypted_storage_from_h1(&h1).unwrap();
+        cfg.salt = old_salt.to_owned();
+
+        assert!(
+            Config::apply_permanent_password_storage_for_sync(&mut cfg, "", "new-salt").unwrap()
+        );
+        assert!(cfg.password.is_empty());
+        assert_eq!(cfg.salt, "new-salt");
+    }
+
+    #[test]
+    fn test_overwrite_settings() {
+        DEFAULT_SETTINGS
+            .write()
+            .unwrap()
+            .insert("b".to_string(), "a".to_string());
+        DEFAULT_SETTINGS
+            .write()
+            .unwrap()
+            .insert("c".to_string(), "a".to_string());
+        CONFIG2
+            .write()
+            .unwrap()
+            .options
+            .insert("a".to_string(), "b".to_string());
+        CONFIG2
+            .write()
+            .unwrap()
+            .options
+            .insert("b".to_string(), "b".to_string());
+        OVERWRITE_SETTINGS
+            .write()
+            .unwrap()
+            .insert("b".to_string(), "c".to_string());
+        OVERWRITE_SETTINGS
+            .write()
+            .unwrap()
+            .insert("c".to_string(), "f".to_string());
+        OVERWRITE_SETTINGS
+            .write()
+            .unwrap()
+            .insert("d".to_string(), "c".to_string());
+        let mut res: HashMap<String, String> = Default::default();
+        res.insert("b".to_owned(), "c".to_string());
+        res.insert("d".to_owned(), "c".to_string());
+        res.insert("c".to_owned(), "a".to_string());
+        Config::purify_options(&mut res);
+        assert!(res.len() == 0);
+        res.insert("b".to_owned(), "c".to_string());
+        res.insert("d".to_owned(), "c".to_string());
+        res.insert("c".to_owned(), "a".to_string());
+        res.insert("f".to_owned(), "a".to_string());
+        Config::purify_options(&mut res);
+        assert!(res.len() == 1);
+        res.insert("b".to_owned(), "c".to_string());
+        res.insert("d".to_owned(), "c".to_string());
+        res.insert("c".to_owned(), "a".to_string());
+        res.insert("f".to_owned(), "a".to_string());
+        res.insert("e".to_owned(), "d".to_string());
+        Config::purify_options(&mut res);
+        assert!(res.len() == 2);
+        res.insert("b".to_owned(), "c".to_string());
+        res.insert("d".to_owned(), "c".to_string());
+        res.insert("c".to_owned(), "a".to_string());
+        res.insert("f".to_owned(), "a".to_string());
+        res.insert("c".to_owned(), "d".to_string());
+        res.insert("d".to_owned(), "cc".to_string());
+        Config::purify_options(&mut res);
+        DEFAULT_SETTINGS
+            .write()
+            .unwrap()
+            .insert("f".to_string(), "c".to_string());
+        Config::purify_options(&mut res);
+        assert!(res.len() == 2);
+        DEFAULT_SETTINGS
+            .write()
+            .unwrap()
+            .insert("f".to_string(), "a".to_string());
+        Config::purify_options(&mut res);
+        assert!(res.len() == 1);
+        let res = Config::get_options();
+        assert!(res["a"] == "b");
+        assert!(res["c"] == "f");
+        assert!(res["b"] == "c");
+        assert!(res["d"] == "c");
+        assert!(Config::get_option("a") == "b");
+        assert!(Config::get_option("c") == "f");
+        assert!(Config::get_option("b") == "c");
+        assert!(Config::get_option("d") == "c");
+        DEFAULT_SETTINGS.write().unwrap().clear();
+        OVERWRITE_SETTINGS.write().unwrap().clear();
+        CONFIG2.write().unwrap().options.clear();
+
+        DEFAULT_LOCAL_SETTINGS
+            .write()
+            .unwrap()
+            .insert("b".to_string(), "a".to_string());
+        DEFAULT_LOCAL_SETTINGS
+            .write()
+            .unwrap()
+            .insert("c".to_string(), "a".to_string());
+        LOCAL_CONFIG
+            .write()
+            .unwrap()
+            .options
+            .insert("a".to_string(), "b".to_string());
+        LOCAL_CONFIG
+            .write()
+            .unwrap()
+            .options
+            .insert("b".to_string(), "b".to_string());
+        OVERWRITE_LOCAL_SETTINGS
+            .write()
+            .unwrap()
+            .insert("b".to_string(), "c".to_string());
+        OVERWRITE_LOCAL_SETTINGS
+            .write()
+            .unwrap()
+            .insert("d".to_string(), "c".to_string());
+        assert!(LocalConfig::get_option("a") == "b");
+        assert!(LocalConfig::get_option("c") == "a");
+        assert!(LocalConfig::get_option("b") == "c");
+        assert!(LocalConfig::get_option("d") == "c");
+        DEFAULT_LOCAL_SETTINGS.write().unwrap().clear();
+        OVERWRITE_LOCAL_SETTINGS.write().unwrap().clear();
+        LOCAL_CONFIG.write().unwrap().options.clear();
+
+        DEFAULT_DISPLAY_SETTINGS
+            .write()
+            .unwrap()
+            .insert("b".to_string(), "a".to_string());
+        DEFAULT_DISPLAY_SETTINGS
+            .write()
+            .unwrap()
+            .insert("c".to_string(), "a".to_string());
+        USER_DEFAULT_CONFIG
+            .write()
+            .unwrap()
+            .0
+            .options
+            .insert("a".to_string(), "b".to_string());
+        USER_DEFAULT_CONFIG
+            .write()
+            .unwrap()
+            .0
+            .options
+            .insert("b".to_string(), "b".to_string());
+        OVERWRITE_DISPLAY_SETTINGS
+            .write()
+            .unwrap()
+            .insert("b".to_string(), "c".to_string());
+        OVERWRITE_DISPLAY_SETTINGS
+            .write()
+            .unwrap()
+            .insert("d".to_string(), "c".to_string());
+        assert!(UserDefaultConfig::read("a") == "b");
+        assert!(UserDefaultConfig::read("c") == "a");
+        assert!(UserDefaultConfig::read("b") == "c");
+        assert!(UserDefaultConfig::read("d") == "c");
+        DEFAULT_DISPLAY_SETTINGS.write().unwrap().clear();
+        OVERWRITE_DISPLAY_SETTINGS.write().unwrap().clear();
+        LOCAL_CONFIG.write().unwrap().options.clear();
+    }
+
+    #[test]
+    fn test_config_deserialize() {
+        let wrong_type_str = r#"
+        id = true
+        enc_id = []
+        password = 1
+        salt = "123456"
+        key_pair = {}
+        key_confirmed = "1"
+        keys_confirmed = 1
+        "#;
+        let cfg = toml::from_str::<Config>(wrong_type_str);
+        assert_eq!(
+            cfg,
+            Ok(Config {
+                salt: "123456".to_string(),
+                ..Default::default()
+            })
+        );
+
+        let wrong_field_str = r#"
+        hello = "world"
+        key_confirmed = true
+        "#;
+        let cfg = toml::from_str::<Config>(wrong_field_str);
+        assert_eq!(
+            cfg,
+            Ok(Config {
+                key_confirmed: true,
+                ..Default::default()
+            })
+        );
+    }
+
+    #[test]
+    fn test_peer_config_deserialize() {
+        let default_peer_config = toml::from_str::<PeerConfig>("").unwrap();
+        {
+            let wrong_type_str = r#"
+            view_style = "adaptive"
+            scroll_style = "scrollbar"
+            custom_resolutions = true
+            "#;
+            let mut cfg_to_compare = default_peer_config.clone();
+            cfg_to_compare.view_style = "adaptive".to_string();
+            cfg_to_compare.scroll_style = "scrollbar".to_string();
+            let cfg = toml::from_str::<PeerConfig>(wrong_type_str);
+            assert_eq!(cfg, Ok(cfg_to_compare), "Failed to test wrong_type_str");
+
+            let wrong_type_str = r#"
+            view_style = "adaptive"
+            scroll_style = "scrollbar"
+            [custom_resolutions.0]
+            w = "1920"
+            h = 1080
+            "#;
+            let mut cfg_to_compare = default_peer_config.clone();
+            cfg_to_compare.view_style = "adaptive".to_string();
+            cfg_to_compare.scroll_style = "scrollbar".to_string();
+            let cfg = toml::from_str::<PeerConfig>(wrong_type_str);
+            assert_eq!(cfg, Ok(cfg_to_compare), "Failed to test wrong_type_str");
+
+            let wrong_field_str = r#"
+            [custom_resolutions.0]
+            w = 1920
+            h = 1080
+            hello = "world"
+            [ui_flutter]
+            "#;
+            let mut cfg_to_compare = default_peer_config.clone();
+            cfg_to_compare.custom_resolutions =
+                HashMap::from([("0".to_string(), Resolution { w: 1920, h: 1080 })]);
+            let cfg = toml::from_str::<PeerConfig>(wrong_field_str);
+            assert_eq!(cfg, Ok(cfg_to_compare), "Failed to test wrong_field_str");
+        }
+    }
+
+    #[test]
+    fn test_store_load() {
+        let peerconfig_id = "123456789";
+        let cfg: PeerConfig = Default::default();
+        cfg.store(&peerconfig_id);
+        assert_eq!(PeerConfig::load(&peerconfig_id), cfg);
+
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(PeerConfig::path(&peerconfig_id))
+                    .expect("reading metadata failed")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn test_uinput_ipc_path_is_shared_across_uids() {
+        const ROOT_UID: u32 = 0;
+        const USER_UID: u32 = 1000;
+
+        let path_root = Config::ipc_path_for_uid(ROOT_UID, "_uinput_keyboard");
+        let path_user = Config::ipc_path_for_uid(USER_UID, "_uinput_keyboard");
+        assert_eq!(path_root, path_user);
+
+        let app_name = APP_NAME.read().unwrap().clone();
+        assert!(
+            path_root.starts_with(&format!("/tmp/{app_name}-service/")),
+            "unexpected uinput ipc path: {}",
+            path_root
+        );
+
+        let non_service_root = Config::ipc_path_for_uid(ROOT_UID, "");
+        let non_service_user = Config::ipc_path_for_uid(USER_UID, "");
+        assert_ne!(non_service_root, non_service_user);
+    }
+}
