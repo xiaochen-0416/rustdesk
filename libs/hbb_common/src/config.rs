@@ -44,10 +44,6 @@ use crate::{
 pub const RENDEZVOUS_TIMEOUT: u64 = 12_000;
 pub const CONNECT_TIMEOUT: u64 = 18_000;
 pub const READ_TIMEOUT: u64 = 18_000;
-// https://github.com/quic-go/quic-go/issues/525#issuecomment-294531351
-// https://datatracker.ietf.org/doc/html/draft-hamilton-early-deployment-quic-00#section-6.10
-// 15 seconds is recommended by quic, though oneSIP recommend 25 seconds,
-// https://www.onsip.com/voip-resources/voip-fundamentals/what-is-nat-keepalive
 pub const REG_INTERVAL: i64 = 15_000;
 pub const COMPRESS_LEVEL: i32 = 3;
 const SERIAL: i32 = 3;
@@ -127,16 +123,9 @@ pub const WS_RELAY_PORT: i32 = 21119;
 
 #[inline]
 pub fn is_service_ipc_postfix(postfix: &str) -> bool {
-    // `_service` is a protected cross-user IPC channel used by the root service.
-    //
-    // On Linux Wayland, input injection is implemented via uinput in the root service process.
-    // The user `--server` process must be able to connect to these uinput IPC channels, so they
-    // must share the same IPC parent directory as `_service`.
     postfix == "_service" || postfix.starts_with("_uinput_")
 }
 
-// Keep Linux/macOS IPC parent directory rules in one place to avoid drift between
-// `ipc_path()` and Unix `ipc_path_for_uid()`.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[inline]
 fn ipc_parent_dir_for_uid(uid: u32, postfix: &str) -> String {
@@ -213,15 +202,15 @@ pub struct Config {
         skip_serializing_if = "String::is_empty",
         deserialize_with = "deserialize_string"
     )]
-    pub id: String, // use
+    pub id: String,
     #[serde(default, deserialize_with = "deserialize_string")]
-    enc_id: String, // store
+    enc_id: String,
     #[serde(default, deserialize_with = "deserialize_string")]
     password: String,
     #[serde(default, deserialize_with = "deserialize_string")]
     salt: String,
     #[serde(default, deserialize_with = "deserialize_keypair")]
-    key_pair: KeyPair, // sk, pk
+    key_pair: KeyPair,
     #[serde(default, deserialize_with = "deserialize_bool")]
     key_confirmed: bool,
     #[serde(default, deserialize_with = "deserialize_hashmap_string_bool")]
@@ -238,7 +227,6 @@ pub struct Socks5Server {
     pub password: String,
 }
 
-// more variable configs
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Config2 {
     #[serde(default, deserialize_with = "deserialize_string")]
@@ -255,7 +243,6 @@ pub struct Config2 {
     #[serde(default)]
     socks: Option<Socks5Server>,
 
-    // the other scalar value must before this
     #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
     pub options: HashMap<String, String>,
 }
@@ -282,7 +269,6 @@ pub struct PeerConfig {
         skip_serializing_if = "String::is_empty"
     )]
     pub view_style: String,
-    // Image scroll style, scrolledge, scrollbar or scroll auto
     #[serde(
         default = "PeerConfig::default_scroll_style",
         deserialize_with = "PeerConfig::deserialize_scroll_style",
@@ -344,7 +330,6 @@ pub struct PeerConfig {
     pub show_my_cursor: ShowMyCursor,
     #[serde(flatten)]
     pub sync_init_clipboard: SyncInitClipboard,
-    // Mouse wheel or touchpad scroll mode
     #[serde(
         default = "PeerConfig::default_reverse_mouse_wheel",
         deserialize_with = "PeerConfig::deserialize_reverse_mouse_wheel",
@@ -377,14 +362,12 @@ pub struct PeerConfig {
     )]
     pub custom_resolutions: HashMap<String, Resolution>,
 
-    // The other scalar value must before this
     #[serde(
         default,
         deserialize_with = "deserialize_hashmap_string_string",
         skip_serializing_if = "HashMap::is_empty"
     )]
-    pub options: HashMap<String, String>, // not use delete to represent default values
-    // Various data for flutter ui
+    pub options: HashMap<String, String>,
     #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
     pub ui_flutter: HashMap<String, String>,
     #[serde(default)]
@@ -621,14 +604,7 @@ impl Config {
             config.id = id;
             id_valid = true;
             store |= store2;
-        } else if
-        // Comment out for forward compatible
-        // crate::get_modified_time(&Self::file_(""))
-        // .checked_sub(std::time::Duration::from_secs(30)) // allow modification during installation
-        // .unwrap_or_else(crate::get_exe_time)
-        // < crate::get_exe_time()
-        // &&
-        !config.id.is_empty()
+        } else if !config.id.is_empty()
             && config.enc_id.is_empty()
             && !decrypt_str_or_original(&config.id, PASSWORD_ENC_VERSION).1
         {
@@ -703,9 +679,6 @@ impl Config {
         match Self::validate_or_decrypt_permanent_password_storage(config) {
             Ok(_) => {}
             Err(err) => {
-                // This path is for unrecoverable permanent-password storage, such as
-                // hashed storage without its salt. Keep unrelated config writes working,
-                // but handle future transient migration errors separately.
                 log::error!(
                     "Clearing invalid permanent password storage before storing config: {err}"
                 );
@@ -748,23 +721,6 @@ impl Config {
         (self.id.is_empty() && self.enc_id.is_empty()) || self.key_pair.0.is_empty()
     }
 
-    /// Get the user's home directory for configuration purposes.
-    ///
-    /// # Security Note
-    /// This function uses `dirs_next::home_dir()` which reads the `$HOME` environment
-    /// variable on Unix systems. This is acceptable for user-space operations (config
-    /// file storage, logging) where the user may intentionally redirect their home
-    /// directory.
-    ///
-    /// **DO NOT use this function in privileged contexts** (e.g., code executed via
-    /// `gtk_sudo` or system services running as root). For privileged operations on
-    /// Linux, use `crate::platform::linux::get_home_dir_trusted()` which bypasses
-    /// the `$HOME` environment variable and queries the system password database
-    /// directly via `getpwuid`.
-    ///
-    /// Using `$HOME` in privileged contexts creates a confused-deputy vulnerability
-    /// where an attacker can manipulate the environment variable to inject malicious
-    /// paths into privileged operations.
     pub fn get_home() -> PathBuf {
         #[cfg(any(target_os = "android", target_os = "ios"))]
         return PathBuf::from(APP_HOME_DIR.read().unwrap().as_str());
@@ -793,7 +749,6 @@ impl Config {
             let org = "".to_owned();
             #[cfg(target_os = "macos")]
             let org = ORG.read().unwrap().clone();
-            // /var/root for root
             if let Some(project) =
                 directories_next::ProjectDirs::from("", &org, &APP_NAME.read().unwrap())
             {
@@ -805,12 +760,6 @@ impl Config {
         }
     }
 
-    /// Get the log directory path.
-    ///
-    /// # Security Note
-    /// On macOS, this function uses `dirs_next::home_dir()` which reads the `$HOME`
-    /// environment variable. On Linux/Android, it uses `Self::get_home()`.
-    /// See [`Self::get_home()`] for security considerations regarding `$HOME` usage.
     #[allow(unreachable_code)]
     pub fn log_path() -> PathBuf {
         #[cfg(target_os = "macos")]
@@ -845,9 +794,6 @@ impl Config {
     pub fn ipc_path(postfix: &str) -> String {
         #[cfg(windows)]
         {
-            // \\ServerName\pipe\PipeName
-            // where ServerName is either the name of a remote computer or a period, to specify the local computer.
-            // https://docs.microsoft.com/en-us/windows/win32/ipc/pipe-names
             format!(
                 "\\\\.\\pipe\\{}\\query{}",
                 *APP_NAME.read().unwrap(),
@@ -868,10 +814,6 @@ impl Config {
             };
             #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
             let mut path: PathBuf = format!("/tmp/{}", *APP_NAME.read().unwrap()).into();
-            // Android stores IPC sockets under app-controlled directories. Create the IPC parent
-            // dir and enforce the expected mode here. On other Unix platforms, `ipc_path()` is
-            // intentionally side-effect free (no mkdir/chmod); callers should enforce directory and
-            // socket permissions at the IPC server boundary.
             #[cfg(target_os = "android")]
             {
                 fs::create_dir_all(&path).ok();
@@ -1117,8 +1059,6 @@ impl Config {
     }
 
     pub fn get_key_pair() -> KeyPair {
-        // lock here to make sure no gen_keypair more than once
-        // no use of CONFIG directly here to ensure no recursive calling in Config::load because of password dec which calling this function
         let mut lock = KEY_PAIR.lock().unwrap();
         if let Some(p) = lock.as_ref() {
             return p.clone();
@@ -1143,18 +1083,12 @@ impl Config {
         KEY_PAIR.lock().unwrap().clone().map(|k| k.1)
     }
 
-    /// Get existing key pair without generating a new one.
-    /// Returns None if no key pair exists in cache or config file.
     pub fn get_existing_key_pair() -> Option<KeyPair> {
         let mut lock = KEY_PAIR.lock().unwrap();
         if let Some(p) = lock.as_ref() {
             return Some(p.clone());
         }
 
-        // IMPORTANT: this path is called while holding KEY_PAIR lock.
-        // Config::load_ must remain a raw conf load/deserialize path and must never
-        // call decrypt_* / symmetric_crypt (directly or indirectly), otherwise this
-        // can re-enter key loading and deadlock.
         let config = Config::load_::<Config>("");
         if !config.key_pair.0.is_empty() {
             *lock = Some(config.key_pair.clone());
@@ -1277,7 +1211,6 @@ impl Config {
     }
 
     pub fn update_id() {
-        // to-do: how about if one ip register a lot of ids?
         let id = Self::get_id();
         let mut rng = rand::thread_rng();
         let new_id = rng.gen_range(1_000_000_000..2_000_000_000).to_string();
@@ -1285,11 +1218,6 @@ impl Config {
         log::info!("id updated from {} to {}", id, new_id);
     }
 
-    /// Sets the local permanent password.
-    ///
-    /// Returns `true` when the password is accepted or already matches the effective
-    /// preset password. Returns `false` when changing the password is disabled or
-    /// the new password cannot be prepared for storage.
     pub fn set_permanent_password(password: &str) -> bool {
         if Self::is_disable_change_permanent_password() {
             return false;
@@ -1326,24 +1254,16 @@ impl Config {
         config: &mut Config,
         password: &str,
     ) -> Option<String> {
-        // Keep salt stable for user-initiated permanent password updates.
-        // Salt should only change when service->user sync updates storage and salt as a pair.
         Self::ensure_permanent_password_salt(config);
         let h1 = compute_permanent_password_h1(password, &config.salt);
         encode_permanent_password_encrypted_storage_from_h1(&h1)
     }
 
-    /// Returns the locally persisted permanent password storage and salt (NOT the hard/preset one).
-    ///
-    /// This function is side-effect free:
-    /// - It does NOT call `get_salt()` (which may auto-generate salt).
-    /// - It returns a consistent snapshot under a single lock.
     pub fn get_local_permanent_password_storage_and_salt() -> (String, String) {
         let config = CONFIG.read().unwrap();
         (config.password.clone(), config.salt.clone())
     }
 
-    /// Persist permanent password storage and salt from service->user config sync.
     pub fn set_permanent_password_storage_for_sync(
         storage: &str,
         salt: &str,
@@ -1442,9 +1362,6 @@ impl Config {
         local_permanent_password_storage_is_usable_for_auth(&local_storage, &local_salt)
     }
 
-    // This shouldn't happen under normal circumstances because the salt
-    // should be automatically generated when migrating to hash storage.
-    // Actually, it is better to avoid calling set_salt at all.
     pub fn set_salt(salt: &str) {
         let mut config = CONFIG.write().unwrap();
         if salt == config.salt {
@@ -1654,8 +1571,6 @@ impl Config {
         return CONFIG.read().unwrap().clone();
     }
 
-    // TODO: `Config::set()` does not invalidate trusted devices when permanent password/salt changes.
-    // This matches historical behavior, but may need revisiting in a separate PR.
     pub fn set(cfg: Config) -> bool {
         let mut lock = CONFIG.write().unwrap();
         if *lock == cfg {
@@ -1663,7 +1578,6 @@ impl Config {
         }
         *lock = cfg;
         lock.store();
-        // Drop CONFIG lock before acquiring KEY_PAIR lock to avoid potential deadlock.
         #[cfg(target_os = "macos")]
         let new_key_pair = lock.key_pair.clone();
         drop(lock);
@@ -1672,11 +1586,6 @@ impl Config {
         true
     }
 
-    /// Invalidate KEY_PAIR cache if it differs from the new key_pair.
-    /// Use None to invalidate the cache instead of Some(key_pair).
-    /// If we use Some with an empty key_pair, get_key_pair() would always return
-    /// the empty key_pair from cache without regenerating.
-    /// By clearing the cache, get_key_pair() will reload and regenerate if needed.
     #[cfg(target_os = "macos")]
     fn invalidate_key_pair_cache_if_changed(new_key_pair: &KeyPair) {
         let mut key_pair_cache = KEY_PAIR.lock().unwrap();
@@ -1762,7 +1671,6 @@ impl PeerConfig {
     }
 
     fn path(id: &str) -> PathBuf {
-        //If the id contains invalid chars, encode it
         let forbidden_paths = Regex::new(r".*[<>:/\\|\?\*].*");
         let path: PathBuf;
         if let Ok(forbidden_paths) = forbidden_paths {
@@ -1774,16 +1682,11 @@ impl PeerConfig {
             path = [PEERS, id_encoded.as_str()].iter().collect();
         } else {
             log::warn!("Regex create failed: {:?}", forbidden_paths.err());
-            // fallback for failing to create this regex.
             path = [PEERS, id.replace(":", "_").as_str()].iter().collect();
         }
         Config::with_extension(Config::path(path))
     }
 
-    // The number of peers to load in the first round when showing the peers card list in the main window.
-    // When there're too many peers, loading all of them at once will take a long time.
-    // We can load them in two rouds, the first round loads the first 100 peers, and the second round loads the rest.
-    // Then the UI will show the first 100 peers first, and the rest will be loaded and shown later.
     pub const BATCH_LOADING_COUNT: usize = 100;
 
     pub fn get_vec_id_modified_time_path(
@@ -1856,7 +1759,6 @@ impl PeerConfig {
                 let first_load_start = std::time::Instant::now();
                 futures::future::join_all(futs).await;
                 if first_load_start.elapsed().as_millis() < 10 {
-                    // No need to preload the rest if the first load is fast.
                     return;
                 }
                 futs = vec![];
@@ -1873,11 +1775,6 @@ impl PeerConfig {
         );
     }
 
-    // We have to preload all peers in a background thread.
-    // Because we find that opening files the first time after the system (Windows) booting will be very slow, up to 200~400ms.
-    // The reason is that the Windows has "Microsoft Defender Antivirus Service" running in the background, which will scan the file when it's opened the first time.
-    // So we have to preload all peers in a background thread to avoid the delay when opening the file the first time.
-    // We can temporarily stop "Microsoft Defender Antivirus Service" or add the fold to the white list, to verify this. But don't do this in the release version.
     pub fn preload_peers() {
         std::thread::spawn(|| {
             Self::preload_peers_async();
@@ -1908,7 +1805,6 @@ impl PeerConfig {
             None => (from + Self::BATCH_LOADING_COUNT).min(all.len()),
         };
 
-        // to <= from is unexpected, but we can just return an empty vec in this case.
         if to <= from {
             return (vec![], from);
         }
@@ -2127,7 +2023,7 @@ serde_field_bool!(
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct LocalConfig {
     #[serde(default, deserialize_with = "deserialize_string")]
-    remote_id: String, // latest used one
+    remote_id: String,
     #[serde(default, deserialize_with = "deserialize_string")]
     kb_layout_type: String,
     #[serde(default, deserialize_with = "deserialize_size")]
@@ -2136,7 +2032,6 @@ pub struct LocalConfig {
     pub fav: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
     options: HashMap<String, String>,
-    // Various data for flutter ui
     #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
     ui_flutter: HashMap<String, String>,
 }
@@ -2227,7 +2122,6 @@ impl LocalConfig {
         .unwrap_or_default()
     }
 
-    // Usually get_option should be used.
     pub fn get_option_from_file(k: &str) -> String {
         get_or(
             &OVERWRITE_LOCAL_SETTINGS,
@@ -2251,7 +2145,6 @@ impl LocalConfig {
             return;
         }
         let mut config = LOCAL_CONFIG.write().unwrap();
-        // The custom client will explictly set "default" as the default language.
         let is_custom_client_default_lang = k == keys::OPTION_LANGUAGE && v == "default";
         if is_custom_client_default_lang {
             config.options.insert(k, "".to_owned());
@@ -2360,8 +2253,6 @@ pub struct UserDefaultConfig {
 impl UserDefaultConfig {
     fn read(key: &str) -> String {
         let mut cfg = USER_DEFAULT_CONFIG.write().unwrap();
-        // we do so, because default config may changed in another process, but we don't sync it
-        // but no need to read every time, give a small interval to avoid too many redundant read waste
         if cfg.1.elapsed() > Duration::from_secs(1) {
             *cfg = (Self::load(), Instant::now());
         }
@@ -2563,7 +2454,6 @@ impl Ab {
             let data = compress(json.as_bytes());
             let max_len = 64 * 1024 * 1024;
             if data.len() > max_len {
-                // maxlen of function decompress
                 log::error!("ab data too large, {} > {}", data.len(), max_len);
                 return;
             }
@@ -2594,7 +2484,6 @@ impl Ab {
     }
 }
 
-// use default value when field type is wrong
 macro_rules! deserialize_default {
     ($func_name:ident, $return_type:ty) => {
         fn $func_name<'de, D>(deserializer: D) -> Result<$return_type, D::Error>
@@ -2693,7 +2582,6 @@ impl Group {
             let data = compress(json.as_bytes());
             let max_len = 64 * 1024 * 1024;
             if data.len() > max_len {
-                // maxlen of function decompress
                 return;
             }
             if let Ok(data) = symmetric_crypt(&data, true) {
@@ -2840,9 +2728,6 @@ pub fn is_disable_installation() -> bool {
     is_some_hard_opton("disable-installation")
 }
 
-// This function must be kept the same as the one in flutter and sciter code.
-// flutter: flutter/lib/common.dart -> option2bool()
-// sciter: Does not have the function, but it should be kept the same.
 pub fn option2bool(option: &str, value: &str) -> bool {
     if option.starts_with("enable-") {
         value != "N"
@@ -2970,26 +2855,14 @@ pub mod keys {
     pub const OPTION_REGISTER_DEVICE: &str = "register-device";
     pub const OPTION_RELAY_SERVER: &str = "relay-server";
     pub const OPTION_ICE_SERVERS: &str = "ice-servers";
-    /// Maximum number of files allowed during a single file transfer request.
-    ///
-    /// Key: `file-transfer-max-files`.
-    /// Unit: number of files (not bytes).
-    ///
-    /// Behaviour:
-    /// - If set to a positive integer N, at most N files are allowed.
-    /// - If set to 0, a safe built-in default is used (see DEFAULT_MAX_VALIDATED_FILES).
-    /// - If unset, negative, or non-integer, no explicit limit is enforced for backward compatibility.
     pub const OPTION_FILE_TRANSFER_MAX_FILES: &str = "file-transfer-max-files";
     pub const OPTION_DISABLE_UDP: &str = "disable-udp";
     pub const OPTION_ALLOW_INSECURE_TLS_FALLBACK: &str = "allow-insecure-tls-fallback";
     pub const OPTION_SHOW_VIRTUAL_MOUSE: &str = "show-virtual-mouse";
-    // joystick is the virtual mouse.
-    // So `OPTION_SHOW_VIRTUAL_MOUSE` should also be set if `OPTION_SHOW_VIRTUAL_JOYSTICK` is set.
     pub const OPTION_SHOW_VIRTUAL_JOYSTICK: &str = "show-virtual-joystick";
     pub const OPTION_ENABLE_FLUTTER_HTTP_ON_RUST: &str = "enable-flutter-http-on-rust";
     pub const OPTION_ALLOW_ASK_FOR_NOTE: &str = "allow-ask-for-note";
 
-    // built-in options
     pub const OPTION_DISPLAY_NAME: &str = "display-name";
     pub const OPTION_AVATAR: &str = "avatar";
     pub const OPTION_PRESET_DEVICE_GROUP_NAME: &str = "preset-device-group-name";
@@ -3006,7 +2879,6 @@ pub mod keys {
     pub const OPTION_ALLOW_COMMAND_LINE_SETTINGS_WHEN_SETTINGS_DISABLED: &str =
         "allow-command-line-settings-when-settings-disabled";
 
-    // Connection punch-through options
     pub const OPTION_ENABLE_UDP_PUNCH: &str = "enable-udp-punch";
     pub const OPTION_ENABLE_IPV6_PUNCH: &str = "enable-ipv6-punch";
     pub const OPTION_HIDE_USERNAME_ON_CARD: &str = "hide-username-on-card";
@@ -3027,7 +2899,6 @@ pub mod keys {
     pub const OPTION_DISABLE_CHANGE_ID: &str = "disable-change-id";
     pub const OPTION_DISABLE_UNLOCK_PIN: &str = "disable-unlock-pin";
 
-    // flutter local options
     pub const OPTION_FLUTTER_REMOTE_MENUBAR_STATE: &str = "remoteMenubarState";
     pub const OPTION_FLUTTER_PEER_SORTING: &str = "peer-sorting";
     pub const OPTION_FLUTTER_PEER_TAB_INDEX: &str = "peer-tab-index";
@@ -3041,21 +2912,17 @@ pub mod keys {
     pub const OPTION_PRINTER_ALLOW_AUTO_PRINT: &str = "allow-printer-auto-print";
     pub const OPTION_PRINTER_SELECTED_NAME: &str = "printer-selected-name";
 
-    // android floating window options
     pub const OPTION_DISABLE_FLOATING_WINDOW: &str = "disable-floating-window";
     pub const OPTION_FLOATING_WINDOW_SIZE: &str = "floating-window-size";
     pub const OPTION_FLOATING_WINDOW_UNTOUCHABLE: &str = "floating-window-untouchable";
     pub const OPTION_FLOATING_WINDOW_TRANSPARENCY: &str = "floating-window-transparency";
     pub const OPTION_FLOATING_WINDOW_SVG: &str = "floating-window-svg";
 
-    // android keep screen on
     pub const OPTION_KEEP_SCREEN_ON: &str = "keep-screen-on";
 
-    // Server-side: keep host system awake during incoming sessions (Security setting)
     pub const OPTION_KEEP_AWAKE_DURING_INCOMING_SESSIONS: &str =
         "keep-awake-during-incoming-sessions";
 
-    // Client-side: keep client system awake during outgoing sessions (General setting)
     pub const OPTION_KEEP_AWAKE_DURING_OUTGOING_SESSIONS: &str =
         "keep-awake-during-outgoing-sessions";
 
@@ -3063,14 +2930,10 @@ pub mod keys {
     pub const OPTION_DISABLE_DISCOVERY_PANEL: &str = "disable-discovery-panel";
     pub const OPTION_PRE_ELEVATE_SERVICE: &str = "pre-elevate-service";
 
-    // proxy settings
-    // The following options are not real keys, they are just used for custom client advanced settings.
-    // The real keys are in Config2::socks.
     pub const OPTION_PROXY_URL: &str = "proxy-url";
     pub const OPTION_PROXY_USERNAME: &str = "proxy-username";
     pub const OPTION_PROXY_PASSWORD: &str = "proxy-password";
 
-    // DEFAULT_DISPLAY_SETTINGS, OVERWRITE_DISPLAY_SETTINGS
     pub const KEYS_DISPLAY_SETTINGS: &[&str] = &[
         OPTION_VIEW_ONLY,
         OPTION_SHOW_MONITORS_TOOLBAR,
@@ -3102,7 +2965,6 @@ pub mod keys {
         OPTION_SYNC_INIT_CLIPBOARD,
         OPTION_TRACKPAD_SPEED,
     ];
-    // DEFAULT_LOCAL_SETTINGS, OVERWRITE_LOCAL_SETTINGS
     pub const KEYS_LOCAL_SETTINGS: &[&str] = &[
         OPTION_THEME,
         OPTION_LANGUAGE,
@@ -3129,7 +2991,6 @@ pub mod keys {
         OPTION_FLOATING_WINDOW_TRANSPARENCY,
         OPTION_FLOATING_WINDOW_SVG,
         OPTION_KEEP_SCREEN_ON,
-        // Client-side: keep client system awake during outgoing sessions (General setting)
         OPTION_KEEP_AWAKE_DURING_OUTGOING_SESSIONS,
         OPTION_DISABLE_GROUP_PANEL,
         OPTION_DISABLE_DISCOVERY_PANEL,
@@ -3145,7 +3006,6 @@ pub mod keys {
         OPTION_ENABLE_FLUTTER_HTTP_ON_RUST,
         OPTION_ALLOW_ASK_FOR_NOTE,
     ];
-    // DEFAULT_SETTINGS, OVERWRITE_SETTINGS
     pub const KEYS_SETTINGS: &[&str] = &[
         OPTION_ACCESS_MODE,
         OPTION_ENABLE_KEYBOARD,
@@ -3206,7 +3066,6 @@ pub mod keys {
         OPTION_ALLOW_AUTO_UPDATE,
     ];
 
-    // BUILDIN_SETTINGS
     pub const KEYS_BUILDIN_SETTINGS: &[&str] = &[
         OPTION_DISPLAY_NAME,
         OPTION_AVATAR,
@@ -3456,4 +3315,580 @@ mod tests {
                 ("salt".to_owned(), "preset-salt".to_owned()),
             ]);
 
-            with_config_and_hard_settings(Config::default(),
+            with_config_and_hard_settings(Config::default(), hard_settings, || {
+                assert_eq!(Config::get_effective_permanent_password_salt(), "");
+                assert_eq!(
+                    Config::get_local_permanent_password_storage_and_salt().1,
+                    ""
+                );
+                assert!(!Config::has_permanent_password());
+                assert!(!Config::is_using_preset_password());
+            });
+        }
+    }
+
+    #[test]
+    fn test_validate_or_decrypt_keeps_plaintext_permanent_password_unchanged() {
+        let mut cfg = Config::default();
+        cfg.password = "p@ssw0rd".to_owned();
+        cfg.salt = "".to_owned();
+        Config::validate_or_decrypt_permanent_password_storage(&mut cfg).unwrap();
+        assert_eq!(cfg.password, "p@ssw0rd");
+        assert!(cfg.salt.is_empty());
+    }
+
+    #[test]
+    fn test_validate_or_decrypt_decrypts_00_permanent_password_without_forcing_store() {
+        let mut cfg = Config::default();
+        let legacy_storage =
+            encrypt_str_or_original("legacy-secret", PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
+        cfg.password = legacy_storage;
+        cfg.salt = "".to_owned();
+        Config::validate_or_decrypt_permanent_password_storage(&mut cfg).unwrap();
+        assert_eq!(cfg.password, "legacy-secret");
+        assert!(cfg.salt.is_empty());
+    }
+
+    #[test]
+    fn test_validate_or_decrypt_rejects_corrupted_00_permanent_password_storage() {
+        let legacy_storage =
+            encrypt_str_or_original("legacy-secret", PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
+        let mut invalid_payload = base64::decode(
+            &legacy_storage.as_bytes()[PASSWORD_ENC_VERSION.len()..],
+            base64::Variant::Original,
+        )
+        .unwrap();
+        *invalid_payload.last_mut().unwrap() ^= 1;
+
+        let mut cfg = Config::default();
+        cfg.password = PASSWORD_ENC_VERSION.to_owned()
+            + &base64::encode(invalid_payload, base64::Variant::Original);
+        cfg.salt = "salt123".to_owned();
+
+        assert!(Config::validate_or_decrypt_permanent_password_storage(&mut cfg).is_err());
+    }
+
+    #[test]
+    fn test_validate_or_decrypt_rejects_encrypted_hashed_permanent_password_without_salt() {
+        let mut cfg = Config::default();
+        let h1 = compute_permanent_password_h1("p@ssw0rd", "salt123");
+        cfg.password = encode_permanent_password_encrypted_storage_from_h1(&h1).unwrap();
+        let original_password = cfg.password.clone();
+
+        assert!(Config::validate_or_decrypt_permanent_password_storage(&mut cfg).is_err());
+        assert_eq!(cfg.password, original_password);
+        assert!(cfg.salt.is_empty());
+    }
+
+    #[test]
+    fn test_set_does_not_validate_or_decrypt_permanent_password_storage_in_memory() {
+        let mut cfg = Config::default();
+        let invalid_payload =
+            crate::password_security::symmetric_crypt(b"not-a-hash", true).unwrap();
+        let invalid_storage = PERMANENT_PASSWORD_ENC_VERSION.to_owned()
+            + &base64::encode(invalid_payload, base64::Variant::Original);
+        cfg.password = invalid_storage.clone();
+        cfg.id = "123456789".to_owned();
+
+        with_config_and_hard_settings(Config::default(), HashMap::new(), || {
+            assert!(Config::set(cfg));
+
+            let updated = Config::get();
+            assert_eq!(updated.password, invalid_storage);
+            assert!(updated.salt.is_empty());
+            assert_eq!(updated.id, "123456789");
+        });
+    }
+
+    #[test]
+    fn test_store_keeps_existing_enc_id_when_id_is_unchanged() {
+        let mut cfg = Config::default();
+        cfg.id = "123456789".to_owned();
+        cfg.enc_id = encrypt_str_or_original(&cfg.id, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
+        let original_enc_id = cfg.enc_id.clone();
+
+        with_config_and_hard_settings(Config::default(), HashMap::new(), || {
+            assert!(Config::set(cfg));
+
+            assert_eq!(Config::load().enc_id, original_enc_id);
+            assert_eq!(Config::get().id, "123456789");
+        });
+    }
+
+    #[test]
+    fn test_store_rewrites_enc_id_when_id_changes() {
+        let original_id = "123456789";
+        let updated_id = "987654321";
+        let mut cfg = Config::default();
+        cfg.id = updated_id.to_owned();
+        let original_enc_id =
+            encrypt_str_or_original(original_id, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
+        cfg.enc_id = original_enc_id.clone();
+
+        with_config_and_hard_settings(Config::default(), HashMap::new(), || {
+            assert!(Config::set(cfg));
+
+            let stored = Config::load().enc_id;
+            let (stored_id, encrypted, _) = decrypt_str_or_original(&stored, PASSWORD_ENC_VERSION);
+            assert_ne!(stored, original_enc_id);
+            assert!(encrypted);
+            assert_eq!(stored_id, updated_id);
+            assert_eq!(Config::get().id, updated_id);
+        });
+    }
+
+    #[test]
+    fn test_config2_store_keeps_existing_unlock_pin_when_pin_is_unchanged() {
+        let _guard = CONFIG_STATE_TEST_LOCK.lock().unwrap();
+        let _file_guard = ConfigFileRestoreGuard::new(Config::file_("2"));
+        let pin = "123456";
+        let original_unlock_pin =
+            encrypt_str_or_original(pin, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
+        let mut cfg = Config2 {
+            unlock_pin: original_unlock_pin.clone(),
+            ..Default::default()
+        };
+        Config::store_(&cfg, "2");
+        let (unlock_pin, decrypted, _) =
+            decrypt_str_or_original(&cfg.unlock_pin, PASSWORD_ENC_VERSION);
+        assert!(decrypted);
+        cfg.unlock_pin = unlock_pin;
+        cfg.nat_type = 1;
+
+        cfg.store();
+
+        let stored = Config::load_::<Config2>("2");
+        assert_eq!(stored.unlock_pin, original_unlock_pin);
+    }
+
+    #[test]
+    fn test_set_does_not_convert_plaintext_permanent_password_to_storage_format_in_memory() {
+        let mut cfg = Config::default();
+        cfg.password = "legacy-secret".to_owned();
+        cfg.salt = "".to_owned();
+
+        with_config_and_hard_settings(Config::default(), HashMap::new(), || {
+            assert!(Config::set(cfg));
+
+            let updated = Config::get();
+            assert!(!updated.password.starts_with(PASSWORD_ENC_VERSION));
+            assert_eq!(updated.password, "legacy-secret");
+            assert!(updated.salt.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_set_keeps_plaintext_permanent_password_with_current_prefix_in_memory() {
+        let mut cfg = Config::default();
+        cfg.password = "01legacy-secret".to_owned();
+        cfg.salt = "".to_owned();
+
+        with_config_and_hard_settings(Config::default(), HashMap::new(), || {
+            assert!(Config::set(cfg));
+
+            let updated = Config::get();
+            assert_eq!(updated.password, "01legacy-secret");
+            assert!(updated.salt.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_validate_or_decrypt_keeps_plaintext_permanent_password_with_current_prefix_and_long_base64(
+    ) {
+        let mut cfg = Config::default();
+        let plain = "01".to_owned() + &base64::encode([42u8; 24], base64::Variant::Original);
+        cfg.password = plain.clone();
+        cfg.salt = "".to_owned();
+
+        Config::validate_or_decrypt_permanent_password_storage(&mut cfg).unwrap();
+        assert_eq!(cfg.password, plain);
+        assert!(cfg.salt.is_empty());
+    }
+
+    #[test]
+    fn test_permanent_password_sync_treats_same_encrypted_hash_as_unchanged() {
+        let mut cfg = Config::default();
+        cfg.salt = "salt123".to_owned();
+        let h1 = compute_permanent_password_h1("p@ssw0rd", &cfg.salt);
+        let encrypted_hash_storage =
+            encode_permanent_password_encrypted_storage_from_h1(&h1).unwrap();
+        cfg.password = encrypted_hash_storage.clone();
+        Config::validate_or_decrypt_permanent_password_storage(&mut cfg).unwrap();
+
+        assert!(!Config::apply_permanent_password_storage_for_sync(
+            &mut cfg,
+            &encrypted_hash_storage,
+            "salt123"
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn test_permanent_password_sync_stores_incoming_encrypted_hash_when_local_empty() {
+        let salt = "salt123";
+        let h1 = compute_permanent_password_h1("p@ssw0rd", salt);
+        let incoming = encode_permanent_password_encrypted_storage_from_h1(&h1).unwrap();
+        let mut cfg = Config::default();
+
+        assert!(
+            Config::apply_permanent_password_storage_for_sync(&mut cfg, &incoming, salt).unwrap()
+        );
+        assert_eq!(cfg.password, incoming);
+        assert_eq!(cfg.salt, salt);
+    }
+
+    #[test]
+    fn test_permanent_password_sync_rejects_non_current_storage_payloads() {
+        let invalid_payload = vec![42u8; sodiumoxide::crypto::secretbox::MACBYTES + 1];
+        let invalid_storage = PERMANENT_PASSWORD_ENC_VERSION.to_owned()
+            + &base64::encode(invalid_payload, base64::Variant::Original);
+        let encrypted_legacy_plaintext =
+            encrypt_str_or_original("legacy-secret", PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
+
+        let encrypted = crate::password_security::symmetric_crypt(b"not-a-hash", true).unwrap();
+        let encrypted_non_hash = PERMANENT_PASSWORD_ENC_VERSION.to_owned()
+            + &base64::encode(encrypted, base64::Variant::Original);
+        for storage in [
+            "00secret",
+            &encrypted_legacy_plaintext,
+            &invalid_storage,
+            "01invalid",
+            &encrypted_non_hash,
+        ] {
+            let mut cfg = Config::default();
+            assert!(Config::apply_permanent_password_storage_for_sync(
+                &mut cfg, storage, "salt123"
+            )
+            .is_err());
+            assert!(cfg.password.is_empty());
+            assert!(cfg.salt.is_empty());
+        }
+
+        let mut cfg = Config::default();
+        cfg.password = invalid_storage.clone();
+        cfg.salt = "salt123".to_owned();
+        assert!(Config::apply_permanent_password_storage_for_sync(
+            &mut cfg,
+            &invalid_storage,
+            "salt123"
+        )
+        .is_err());
+        assert_eq!(cfg.password, invalid_storage);
+        assert_eq!(cfg.salt, "salt123");
+    }
+
+    #[test]
+    fn test_permanent_password_sync_rejects_non_empty_storage_without_salt() {
+        let mut cfg = Config::default();
+        let h1 = compute_permanent_password_h1("p@ssw0rd", "salt123");
+        let incoming = encode_permanent_password_encrypted_storage_from_h1(&h1).unwrap();
+
+        assert!(
+            Config::apply_permanent_password_storage_for_sync(&mut cfg, &incoming, "").is_err()
+        );
+        assert!(cfg.password.is_empty());
+        assert!(cfg.salt.is_empty());
+    }
+
+    #[test]
+    fn test_permanent_password_sync_empty_storage_clears_existing_password() {
+        let salt = "salt123";
+        let h1 = compute_permanent_password_h1("p@ssw0rd", salt);
+        let mut cfg = Config::default();
+        cfg.password = encode_permanent_password_encrypted_storage_from_h1(&h1).unwrap();
+        cfg.salt = salt.to_owned();
+
+        assert!(Config::apply_permanent_password_storage_for_sync(&mut cfg, "", "").unwrap());
+        assert!(cfg.password.is_empty());
+        assert_eq!(cfg.salt, salt);
+    }
+
+    #[test]
+    fn test_permanent_password_sync_empty_storage_uses_incoming_salt() {
+        let old_salt = "old-salt";
+        let h1 = compute_permanent_password_h1("p@ssw0rd", old_salt);
+        let mut cfg = Config::default();
+        cfg.password = encode_permanent_password_encrypted_storage_from_h1(&h1).unwrap();
+        cfg.salt = old_salt.to_owned();
+
+        assert!(
+            Config::apply_permanent_password_storage_for_sync(&mut cfg, "", "new-salt").unwrap()
+        );
+        assert!(cfg.password.is_empty());
+        assert_eq!(cfg.salt, "new-salt");
+    }
+
+    #[test]
+    fn test_overwrite_settings() {
+        DEFAULT_SETTINGS
+            .write()
+            .unwrap()
+            .insert("b".to_string(), "a".to_string());
+        DEFAULT_SETTINGS
+            .write()
+            .unwrap()
+            .insert("c".to_string(), "a".to_string());
+        CONFIG2
+            .write()
+            .unwrap()
+            .options
+            .insert("a".to_string(), "b".to_string());
+        CONFIG2
+            .write()
+            .unwrap()
+            .options
+            .insert("b".to_string(), "b".to_string());
+        OVERWRITE_SETTINGS
+            .write()
+            .unwrap()
+            .insert("b".to_string(), "c".to_string());
+        OVERWRITE_SETTINGS
+            .write()
+            .unwrap()
+            .insert("c".to_string(), "f".to_string());
+        OVERWRITE_SETTINGS
+            .write()
+            .unwrap()
+            .insert("d".to_string(), "c".to_string());
+        let mut res: HashMap<String, String> = Default::default();
+        res.insert("b".to_owned(), "c".to_string());
+        res.insert("d".to_owned(), "c".to_string());
+        res.insert("c".to_owned(), "a".to_string());
+        Config::purify_options(&mut res);
+        assert!(res.len() == 0);
+        res.insert("b".to_owned(), "c".to_string());
+        res.insert("d".to_owned(), "c".to_string());
+        res.insert("c".to_owned(), "a".to_string());
+        res.insert("f".to_owned(), "a".to_string());
+        Config::purify_options(&mut res);
+        assert!(res.len() == 1);
+        res.insert("b".to_owned(), "c".to_string());
+        res.insert("d".to_owned(), "c".to_string());
+        res.insert("c".to_owned(), "a".to_string());
+        res.insert("f".to_owned(), "a".to_string());
+        res.insert("e".to_owned(), "d".to_string());
+        Config::purify_options(&mut res);
+        assert!(res.len() == 2);
+        res.insert("b".to_owned(), "c".to_string());
+        res.insert("d".to_owned(), "c".to_string());
+        res.insert("c".to_owned(), "a".to_string());
+        res.insert("f".to_owned(), "a".to_string());
+        res.insert("c".to_owned(), "d".to_string());
+        res.insert("d".to_owned(), "cc".to_string());
+        Config::purify_options(&mut res);
+        DEFAULT_SETTINGS
+            .write()
+            .unwrap()
+            .insert("f".to_string(), "c".to_string());
+        Config::purify_options(&mut res);
+        assert!(res.len() == 2);
+        DEFAULT_SETTINGS
+            .write()
+            .unwrap()
+            .insert("f".to_string(), "a".to_string());
+        Config::purify_options(&mut res);
+        assert!(res.len() == 1);
+        let res = Config::get_options();
+        assert!(res["a"] == "b");
+        assert!(res["c"] == "f");
+        assert!(res["b"] == "c");
+        assert!(res["d"] == "c");
+        assert!(Config::get_option("a") == "b");
+        assert!(Config::get_option("c") == "f");
+        assert!(Config::get_option("b") == "c");
+        assert!(Config::get_option("d") == "c");
+        DEFAULT_SETTINGS.write().unwrap().clear();
+        OVERWRITE_SETTINGS.write().unwrap().clear();
+        CONFIG2.write().unwrap().options.clear();
+
+        DEFAULT_LOCAL_SETTINGS
+            .write()
+            .unwrap()
+            .insert("b".to_string(), "a".to_string());
+        DEFAULT_LOCAL_SETTINGS
+            .write()
+            .unwrap()
+            .insert("c".to_string(), "a".to_string());
+        LOCAL_CONFIG
+            .write()
+            .unwrap()
+            .options
+            .insert("a".to_string(), "b".to_string());
+        LOCAL_CONFIG
+            .write()
+            .unwrap()
+            .options
+            .insert("b".to_string(), "b".to_string());
+        OVERWRITE_LOCAL_SETTINGS
+            .write()
+            .unwrap()
+            .insert("b".to_string(), "c".to_string());
+        OVERWRITE_LOCAL_SETTINGS
+            .write()
+            .unwrap()
+            .insert("d".to_string(), "c".to_string());
+        assert!(LocalConfig::get_option("a") == "b");
+        assert!(LocalConfig::get_option("c") == "a");
+        assert!(LocalConfig::get_option("b") == "c");
+        assert!(LocalConfig::get_option("d") == "c");
+        DEFAULT_LOCAL_SETTINGS.write().unwrap().clear();
+        OVERWRITE_LOCAL_SETTINGS.write().unwrap().clear();
+        LOCAL_CONFIG.write().unwrap().options.clear();
+
+        DEFAULT_DISPLAY_SETTINGS
+            .write()
+            .unwrap()
+            .insert("b".to_string(), "a".to_string());
+        DEFAULT_DISPLAY_SETTINGS
+            .write()
+            .unwrap()
+            .insert("c".to_string(), "a".to_string());
+        USER_DEFAULT_CONFIG
+            .write()
+            .unwrap()
+            .0
+            .options
+            .insert("a".to_string(), "b".to_string());
+        USER_DEFAULT_CONFIG
+            .write()
+            .unwrap()
+            .0
+            .options
+            .insert("b".to_string(), "b".to_string());
+        OVERWRITE_DISPLAY_SETTINGS
+            .write()
+            .unwrap()
+            .insert("b".to_string(), "c".to_string());
+        OVERWRITE_DISPLAY_SETTINGS
+            .write()
+            .unwrap()
+            .insert("d".to_string(), "c".to_string());
+        assert!(UserDefaultConfig::read("a") == "b");
+        assert!(UserDefaultConfig::read("c") == "a");
+        assert!(UserDefaultConfig::read("b") == "c");
+        assert!(UserDefaultConfig::read("d") == "c");
+        DEFAULT_DISPLAY_SETTINGS.write().unwrap().clear();
+        OVERWRITE_DISPLAY_SETTINGS.write().unwrap().clear();
+        LOCAL_CONFIG.write().unwrap().options.clear();
+    }
+
+    #[test]
+    fn test_config_deserialize() {
+        let wrong_type_str = r#"
+        id = true
+        enc_id = []
+        password = 1
+        salt = "123456"
+        key_pair = {}
+        key_confirmed = "1"
+        keys_confirmed = 1
+        "#;
+        let cfg = toml::from_str::<Config>(wrong_type_str);
+        assert_eq!(
+            cfg,
+            Ok(Config {
+                salt: "123456".to_string(),
+                ..Default::default()
+            })
+        );
+
+        let wrong_field_str = r#"
+        hello = "world"
+        key_confirmed = true
+        "#;
+        let cfg = toml::from_str::<Config>(wrong_field_str);
+        assert_eq!(
+            cfg,
+            Ok(Config {
+                key_confirmed: true,
+                ..Default::default()
+            })
+        );
+    }
+
+    #[test]
+    fn test_peer_config_deserialize() {
+        let default_peer_config = toml::from_str::<PeerConfig>("").unwrap();
+        {
+            let wrong_type_str = r#"
+            view_style = "adaptive"
+            scroll_style = "scrollbar"
+            custom_resolutions = true
+            "#;
+            let mut cfg_to_compare = default_peer_config.clone();
+            cfg_to_compare.view_style = "adaptive".to_string();
+            cfg_to_compare.scroll_style = "scrollbar".to_string();
+            let cfg = toml::from_str::<PeerConfig>(wrong_type_str);
+            assert_eq!(cfg, Ok(cfg_to_compare), "Failed to test wrong_type_str");
+
+            let wrong_type_str = r#"
+            view_style = "adaptive"
+            scroll_style = "scrollbar"
+            [custom_resolutions.0]
+            w = "1920"
+            h = 1080
+            "#;
+            let mut cfg_to_compare = default_peer_config.clone();
+            cfg_to_compare.view_style = "adaptive".to_string();
+            cfg_to_compare.scroll_style = "scrollbar".to_string();
+            let cfg = toml::from_str::<PeerConfig>(wrong_type_str);
+            assert_eq!(cfg, Ok(cfg_to_compare), "Failed to test wrong_type_str");
+
+            let wrong_field_str = r#"
+            [custom_resolutions.0]
+            w = 1920
+            h = 1080
+            hello = "world"
+            [ui_flutter]
+            "#;
+            let mut cfg_to_compare = default_peer_config.clone();
+            cfg_to_compare.custom_resolutions =
+                HashMap::from([("0".to_string(), Resolution { w: 1920, h: 1080 })]);
+            let cfg = toml::from_str::<PeerConfig>(wrong_field_str);
+            assert_eq!(cfg, Ok(cfg_to_compare), "Failed to test wrong_field_str");
+        }
+    }
+
+    #[test]
+    fn test_store_load() {
+        let peerconfig_id = "123456789";
+        let cfg: PeerConfig = Default::default();
+        cfg.store(&peerconfig_id);
+        assert_eq!(PeerConfig::load(&peerconfig_id), cfg);
+
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(PeerConfig::path(&peerconfig_id))
+                    .expect("reading metadata failed")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn test_uinput_ipc_path_is_shared_across_uids() {
+        const ROOT_UID: u32 = 0;
+        const USER_UID: u32 = 1000;
+
+        let path_root = Config::ipc_path_for_uid(ROOT_UID, "_uinput_keyboard");
+        let path_user = Config::ipc_path_for_uid(USER_UID, "_uinput_keyboard");
+        assert_eq!(path_root, path_user);
+
+        let app_name = APP_NAME.read().unwrap().clone();
+        assert!(
+            path_root.starts_with(&format!("/tmp/{app_name}-service/")),
+            "unexpected uinput ipc path: {}",
+            path_root
+        );
+
+        let non_service_root = Config::ipc_path_for_uid(ROOT_UID, "");
+        let non_service_user = Config::ipc_path_for_uid(USER_UID, "");
+        assert_ne!(non_service_root, non_service_user);
+    }
+}
